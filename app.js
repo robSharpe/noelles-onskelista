@@ -4,11 +4,11 @@ const $=id=>document.getElementById(id);
 const configured=SUPABASE_URL.startsWith('https://')&&SUPABASE_ANON_KEY.length>30;
 const db=configured?createClient(SUPABASE_URL,SUPABASE_ANON_KEY):null;
 const defaults=[['🚵‍♀️','Mountainbike'],['✏️','Pennfodral'],['💎','Örhängen'],['⚽','Fotbollsskor'],['⚽','Fotboll'],['🚴','Hjälm'],['💧','Vattenflaska till skolan'],['📚','Spännande böcker (inte läskiga)'],['🪴','Fler växter'],['🛍️','Shopping med farmor'],['🎨','Pyssel / smycken']];
-let wishes=[],selected=null,admin=false;
+let wishes=[],selected=null,admin=false,child=false;
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const notice=s=>$('notice').textContent=s;
 function render(){
- $('list').innerHTML=wishes.map(w=>`<article class="card ${w.reserved_by?'reserved':''}"><div class="emoji">${escape(w.emoji)}</div><h2>${escape(w.name)}</h2><p>${w.reserved_by?'🔒 Reserverad av '+escape(w.reserved_by):'✨ Ledig önskning'}</p>${w.reserved_by?'':`<button data-reserve="${w.id}">Jag köper den</button>`}${admin?` <button class="secondary" data-delete="${w.id}">Ta bort</button> ${w.reserved_by?`<button class="secondary" data-release="${w.id}">Frigör</button>`:''}`:''}</article>`).join('');
+ $('list').innerHTML=wishes.map(w=>`<article class="card ${!child&&w.reserved_by?'reserved':''}"><div class="emoji">${escape(w.emoji)}</div><h2>${escape(w.name)}</h2><p>${child?'💗 En av Noelles önskningar':w.reserved_by?'🔒 Reserverad av '+escape(w.reserved_by):'✨ Ledig önskning'}</p>${child||w.reserved_by?'':`<button data-reserve="${w.id}">Jag köper den</button>`}${admin?` <button class="secondary" data-delete="${w.id}">Ta bort</button> ${w.reserved_by?`<button class="secondary" data-release="${w.id}">Frigör</button>`:''}`:''}</article>`).join('');
  document.querySelectorAll('[data-reserve]').forEach(b=>b.onclick=()=>{selected=Number(b.dataset.reserve);$('dialogTitle').textContent='Reservera: '+wishes.find(w=>w.id===selected).name;$('reserveDialog').showModal()});
  document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=async()=>{if(!confirm('Ta bort önskningen?'))return;const {error}=await db.from('wishes').delete().eq('id',b.dataset.delete);if(error)notice(error.message);else load()});
  document.querySelectorAll('[data-release]').forEach(b=>b.onclick=async()=>{if(!confirm('Frigöra reservationen?'))return;const {error}=await db.from('wishes').update({reserved_by:null}).eq('id',b.dataset.release);if(error)notice(error.message);else load()});
@@ -29,8 +29,32 @@ $('reserveForm').onsubmit=async e=>{
  catch(err){notice('Kunde inte reservera: '+err.message)}finally{button.disabled=false}
 };
 $('adminToggle').onclick=()=>$('adminPanel').classList.toggle('hidden');
-async function authState(){if(!db)return;const {data:{session}}=await db.auth.getSession();admin=!!session;$('login').classList.toggle('hidden',admin);$('adminTools').classList.toggle('hidden',!admin);render()}
-$('signIn').onclick=async()=>{if(!db)return notice('Anslut Supabase först.');const {error}=await db.auth.signInWithPassword({email:$('email').value,password:$('password').value});if(error)notice(error.message);else{notice('Inloggad');await authState()}};
+async function authState(){
+ if(!db)return;
+ const {data:{session}}=await db.auth.getSession();
+ admin=false;child=false;
+ if(session){
+  const uid=session.user.id;
+  const [ar,cr]=await Promise.all([
+   db.from('wishlist_admins').select('user_id').eq('user_id',uid).maybeSingle(),
+   db.from('wishlist_children').select('user_id').eq('user_id',uid).maybeSingle()
+  ]);
+  admin=!!ar.data;child=!!cr.data&&!admin;
+ }
+ $('login').classList.toggle('hidden',admin||child);
+ $('adminTools').classList.toggle('hidden',!admin);
+ $('childLogin').classList.toggle('hidden',child);
+ $('childStatus').classList.toggle('hidden',!child);
+ $('adminToggle').classList.toggle('hidden',child);
+ render();
+}
+$('signIn').onclick=async()=>{if(!db)return notice('Anslut Supabase först.');const {error}=await db.auth.signInWithPassword({email:$('email').value,password:$('password').value});if(error)notice(error.message);else{await authState();notice(admin?'Inloggad som förälder':'Kontot har inte föräldrarättigheter.')}};
+$('childSignIn').onclick=async()=>{
+ if(!db)return;
+ const {error}=await db.auth.signInWithPassword({email:$('childEmail').value,password:$('childPassword').value});
+ if(error)notice(error.message);else{await authState();notice(child?'Välkommen till din önskelista! 💗':'Kontot har inte tillgång till barnvyn.');}
+};
+$('childSignOut').onclick=async()=>{await db.auth.signOut();await authState();notice('Utloggad');};
 $('signOut').onclick=async()=>{await db.auth.signOut();await authState()};
 $('addWish').onclick=async()=>{const name=$('newName').value.trim();if(!name)return;const {error}=await db.from('wishes').insert({name,emoji:$('newEmoji').value.trim()||'🎁',sort_order:wishes.length+1});if(error)notice(error.message);else{$('newName').value='';$('newEmoji').value='';await load()}};
 if(db){db.channel('wishes-live').on('postgres_changes',{event:'*',schema:'public',table:'wishes'},load).subscribe();db.auth.onAuthStateChange(()=>setTimeout(authState,0))}
